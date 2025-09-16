@@ -2,6 +2,8 @@ export interface WebRTCConfig {
   onStatusChange: (status: string, type: string) => void;
   onMessage: (speaker: string, text: string) => void;
   onError: (error: string) => void;
+  onLocalStream?: (stream: MediaStream) => void;
+  onRemoteStream?: (stream: MediaStream) => void;
 }
 
 export class WebRTCManager {
@@ -9,14 +11,14 @@ export class WebRTCManager {
   private dc: RTCDataChannel | null = null;
   private audioElement: HTMLAudioElement | null = null;
   private config: WebRTCConfig;
-  private ephemeralKey: string | null = null;
+  private localStream: MediaStream | null = null;
+  private remoteStream: MediaStream | null = null;
 
   constructor(config: WebRTCConfig) {
     this.config = config;
   }
 
   async connect(ephemeralKey: string): Promise<void> {
-    this.ephemeralKey = ephemeralKey;
 
     // Create peer connection
     this.pc = new RTCPeerConnection();
@@ -29,14 +31,22 @@ export class WebRTCManager {
     this.pc.ontrack = (e) => {
       if (this.audioElement) {
         this.audioElement.srcObject = e.streams[0];
+        this.remoteStream = e.streams[0];
+        if (this.config.onRemoteStream) {
+          this.config.onRemoteStream(e.streams[0]);
+        }
       }
     };
 
     // Add local audio track for microphone input
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.localStream = stream;
       const audioTrack = stream.getTracks()[0];
       this.pc.addTrack(audioTrack);
+      if (this.config.onLocalStream) {
+        this.config.onLocalStream(stream);
+      }
     } catch (error) {
       throw new Error(`Failed to access microphone: ${error}`);
     }
@@ -125,22 +135,39 @@ export class WebRTCManager {
         break;
 
       case "response.audio_transcript.delta":
-        // Handle incremental transcript updates
+        // Log transcript deltas for debugging
         if (event.delta) {
-          // Update the last message or create a new one
           console.log("Transcript delta:", event.delta);
         }
         break;
 
       case "response.audio_transcript.done":
+        // Final transcript
+        console.log("Mariam finished speaking");
         if (event.transcript) {
           this.config.onMessage("Mariam", event.transcript);
         }
         break;
 
+      case "input_audio_buffer.speech_started":
+        // User started speaking - just log it
+        console.log("Interviewer speaking");
+        break;
+
+      case "input_audio_buffer.speech_stopped":
+        // User stopped speaking - just log it
+        console.log("Interviewer stopped speaking");
+        break;
+
       case "error":
         this.config.onError(`Server error: ${event.error?.message || "Unknown error"}`);
         break;
+
+      default:
+        // Log unhandled events for debugging
+        if (event.type && !event.type.startsWith("response.content_part")) {
+          console.log(`Unhandled event: ${event.type}`, event);
+        }
     }
   }
 
@@ -197,9 +224,24 @@ export class WebRTCManager {
       this.audioElement.srcObject = null;
       this.audioElement = null;
     }
+
+    if (this.localStream) {
+      this.localStream.getTracks().forEach(track => track.stop());
+      this.localStream = null;
+    }
+
+    this.remoteStream = null;
   }
 
   isConnected(): boolean {
     return this.pc !== null && this.pc.connectionState === "connected";
+  }
+
+  getLocalStream(): MediaStream | null {
+    return this.localStream;
+  }
+
+  getRemoteStream(): MediaStream | null {
+    return this.remoteStream;
   }
 }
